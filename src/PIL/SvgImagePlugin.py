@@ -7,10 +7,16 @@ from functools import reduce
 
 # font-family//font-weight//font-style -> path
 font_mapping: Dict[str, str] = {}
+svg_default_size = 480, 480
+svg_default_background = "#FFFFFF"
 
 def register_font(path: str, family: str, weight: str = "normal", style: str = "normal"):
     font_mapping["%s//%s//%s" % (family, weight, style)] = path
     pass
+
+def set_svg_default(size: Tuple[int, int], background: str):
+    svg_default_size = size
+    svg_default_background = background
 
 class SvgPainter:
     """
@@ -93,14 +99,30 @@ class SvgPainter:
                 transformList.append((op, params))
         return transformList
 
-    # converts styles into attributes
-    def parse_style(self, style: str, attrib):
-        cssAttributes = style.split(";")
-        for a in cssAttributes:
-            if a.strip() != "":
-                (k, v) = a.split(":")
-                if k.strip() != "":
-                    attrib[k.strip()] = v.strip()
+    def apply_style(self, tag: str, attrib):
+        def apply_style_to_attrib(style: str, attrib): # converts styles into attributes
+            cssAttributes = style.split(";")
+            for a in cssAttributes:
+                if a.strip() != "":
+                    (k, v) = a.split(":")
+                    if k.strip() != "":
+                        attrib[k.strip()] = v.strip()
+
+        if "id" in attrib:
+            id = attrib["id"]
+            for (sel, style) in self.styles:
+                if sel == "#" + id:
+                    apply_style_to_attrib(style, attrib)
+
+        if "class" in attrib:
+            classes = attrib["class"].split(' ')
+            for (sel, style) in self.styles:
+                if sel in map(lambda cls: "." + cls, classes):
+                    apply_style_to_attrib(style, attrib)
+
+        if "style" in attrib:
+            apply_style_to_attrib(attrib["style"], attrib)
+        
 
     def parse_font_size(self, fontSize):
         return self.parse_size(fontSize)
@@ -144,40 +166,79 @@ class SvgPainter:
 
     def flush_text(self):
         text = self.text
-        texts = text.split(" ")
 
-        first = True
-        for t in texts:
-            if first:
-                first = False
-            else:
-                self.draw_text(" ")
-            self.draw_text(t)
+        self.draw_text(text)
+        # texts = text.split(" ")
+
+        # first = True
+        # for t in texts:
+        #     if first:
+        #         first = False
+        #     else:
+        #         self.draw_text(" ")
+        #     self.draw_text(t)
 
     def draw_text(self, text: str):
+        def draw_text_fix(xy: Tuple[float, float], text: str, font, fill):
+            last_text_point = xy
+            texts = text.split(" ")
+
+            font_size = self.parse_font_size(self.get_attribute("font-size", 48, True))
+            space_size = font_size / 3
+
+            first = True
+            for t in texts:
+                if first:
+                    first = False
+                else:
+                    last_text_point = (last_text_point[0] + space_size, last_text_point[1])
+                size = self.draw.textsize(t, font = font)
+                self.draw.text(last_text_point, t, font = font, fill = fill)
+                last_text_point = (last_text_point[0] + size[0], last_text_point[1])
+
+            return last_text_point
+
+        def draw_text_size_fix(text: str, font: ImageFont):
+            sizefull = self.draw.textsize(text, font = font)
+            texts = text.split(" ")
+
+            width = 0.0
+            font_size = self.parse_font_size(self.get_attribute("font-size", 48, True))
+            space_size = font_size / 3
+
+            first = True
+            for t in texts:
+                if first:
+                    first = False
+                else:
+                    width += space_size
+                size = self.draw.textsize(t, font = font)
+                width += size[0]
+
+            return (width, sizefull[1])
+
         #text = self.textStack[-1]
         #self.textStack[-1] = ""
         self.text = ""
-        if text == " ":
-            fontSize = self.parse_font_size(self.get_attribute("font-size", 48, True))
-            spaceSize = fontSize / 3
-            self.lasttextpoint = (self.lasttextpoint[0] + spaceSize, self.lasttextpoint[1])
-            return
         (tag, attrib) = self.tagstack[-1]
         if (tag == "text" or tag == "tspan"):
             if text != "":
                 alignment = self.get_attribute("text-align", "start", True)
+                alignment = self.get_attribute("text-anchor", alignment, True)
                 # print (text, self.getCoords(self.getAttribute("x", 0, True), self.getAttribute("y", 0, True)), self.getAttribute("font-size", 0, True), self.parseFontSize(self.getAttribute("font-size", 0, True)))
                 last_text_point = self.lasttextpoint
                 font = self.resolve_font()
                 ascent, descent = font.getmetrics()
 
-                size = self.draw.textsize(text, font = font)
+                size = draw_text_size_fix(text, font)
                 if alignment == "end":
-                    self.draw.text((last_text_point[0] - size[0], last_text_point[1] - ascent), text, font = font, fill = self.parse_color(self.get_attribute("fill", "#000", False)))
+                    draw_text_fix((last_text_point[0] - size[0], last_text_point[1] - ascent), text, font, self.parse_color(self.get_attribute("fill", "#000", False)))
                     self.lasttextpoint = (last_text_point[0], last_text_point[1])
+                if alignment == "middle":
+                    last_text_point = draw_text_fix((last_text_point[0] - size[0] / 2, last_text_point[1] - ascent), text, font, self.parse_color(self.get_attribute("fill", "#000", False)))
+                    self.lasttextpoint = (last_text_point[0] + size[0] / 2, last_text_point[1])
                 else:
-                    self.draw.text((last_text_point[0], last_text_point[1] - ascent), text, font = font, fill = self.parse_color(self.get_attribute("fill", "#000", False)))
+                    draw_text_fix((last_text_point[0], last_text_point[1] - ascent), text, font, self.parse_color(self.get_attribute("fill", "#000", False)))
                     self.lasttextpoint = (last_text_point[0] + size[0], last_text_point[1])
 
     def parse_path_data(self, data: str):
@@ -316,6 +377,16 @@ class SvgPainter:
 
         self.flush_line(point_list, stroke_width, stroke, fill)
 
+    def parse_style_tag(self):
+        css = self.text
+        #print(css)
+        decls = css.split('}')
+        for decl in decls:
+            keyvalue = decl.split('{')
+            if (len(keyvalue) == 2):
+                self.styles.append((keyvalue[0].strip(), keyvalue[1].strip()))
+        #print(self.styles)
+
     # open XML tag
     def start(self, tag: str, attrib):
         (ns, tag) = self.get_ns_tag(tag)
@@ -327,8 +398,8 @@ class SvgPainter:
 
         self.tagstack.append((tag, attrib))
 
-        if self.draw and "style" in attrib:
-            self.parse_style(attrib["style"], attrib)
+        if self.draw:
+            self.apply_style(tag, attrib)
         
         if not self.draw and not tag == "svg":
             return
@@ -340,6 +411,9 @@ class SvgPainter:
             else:
                 self.svgviewbox = [0, 0, self.svgsize[0], self.svgsize[1]]
             #print self.svgViewBox
+
+        if tag == "style":
+            self.parse_style_tag()
         
         elif tag == "rect":
             #print self.tagStack[-1][1]
@@ -397,7 +471,12 @@ class SvgPainter:
             return
 
         if self.draw:
-            self.flush_text()
+            if tag == "style":
+                self.parse_style_tag()
+            if tag == "title" or tag == "desc":
+                pass
+            else:
+                self.flush_text()
 
         #self.textStack.pop()
 
@@ -408,9 +487,8 @@ class SvgPainter:
 
     # text data
     def data(self, data):
-        text = data
-        #self.textStack.append(text)
-        self.text = text
+        self.text = self.text + data
+        # print(self.tagstack[-1][0], 'text', data)
 
     # finish parsing
     def close(self): pass
@@ -424,6 +502,7 @@ class SvgPainter:
         self.lasttextpoint = [0, 0]
         self.text = ""
         self.svgsize = imagesize
+        self.styles = [ ]
 
         # set default background colour
         if imagedraw and background:
@@ -478,7 +557,7 @@ class SvgImageFile(ImageFile.ImageFile):
         header = self.fp.read(4096)
 
         # size in pixels (width, height)
-        self._size = 480, 480
+        self._size = svg_default_size
         try:
             # try to find the SVG width and height
             target = SvgPainter(None, self._size, None)
@@ -494,7 +573,7 @@ class SvgImageFile(ImageFile.ImageFile):
         self.mode = "RGB"
 
         # data descriptor
-        self.tile = [("SVGXML", (0, 0) + self.size, 0, (None, self, None, None, "#FFFFFF"))]
+        self.tile = [("SVGXML", (0, 0) + self.size, 0, (None, self, None, None, svg_default_background))]
 
 Image.register_open(SvgImageFile.format, SvgImageFile, _accept)
 
